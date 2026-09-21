@@ -1,210 +1,55 @@
+# Personal writing style with LoRA
 
-# LoRA Fine-Tuning of Mistral-7B and Qwen2.5-7B for Text Generation in a Personal Communication Style
+I built this project to study whether a small adapter could make an open language model write more like a particular author. The input is a collection of posts used with the author's permission. The task is held-out text continuation, not question answering.
 
-Проект исследует возможность дообучения LLM (например, Mistral 7B) под стиль конкретного человека на основе данных из Telegram канала. Для адаптации используется LoRA (Low-Rank Adaptation), позволяющая эффективно дообучать модель даже при ограниченном объёме данных.
+The pipeline separates the base model, quantization, adapter and training settings. It supports the Mistral and Qwen configurations in `configs/`, with optional 4-bit loading and LoRA on the attention projections.
 
-Этот репозиторий - пайплайн, позволяющий для выбранного канала, выбранной модели, выбранного конфига квантизации и выбранного LoRa-конфига,
-распарсить данные из тг канала, сквантовать и затюнить модель, а затем измерить на ней метрики.
+## What is available
 
-Также тут есть модифицированный пайплайн для замера метрик на моделях через OpenAI API (например gpt3.5-turbo), для последующего сравнения результатов с локально зафайнтюнеными моделями.
+The repository contains data preparation, adapter training, generation and evaluation code. It does not contain personal messages, trained weights or a verified results table. I therefore do not claim a measured improvement in writing style from this public snapshot.
 
----
+The evaluation uses the first 80% of a held-out post as a prompt and compares the generated continuation with the rest. BLEU, ROUGE-L and BERTScore describe text overlap or semantic similarity. They do not establish that a model has learned someone's style. Perplexity and repetition are useful diagnostics, with the same limitation.
 
-## Установка
+[Research notes](docs/research.md) explain the experiment, evaluation problems and changes made while preparing this release.
+
+## Try the data pipeline
+
+Python 3.11 or 3.12. This part runs on a CPU and needs no credentials.
 
 ```bash
-git clone git@github.com:jeck5iv/NIR.git
-cd NIR
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-checks.txt
+python -m scripts.prepare_data --input examples/posts.csv --output /tmp/style-data --min-chars 20
+python -m unittest discover -s tests
+```
+
+The example posts are synthetic. For your own data, supply a CSV with `date` and `text` columns. Preparation removes links and handles, keeps punctuation, removes exact cleaned duplicates and splits in time order. It writes only cleaned text and timestamps, not original messages or account metadata. This is basic redaction, not guaranteed anonymization.
+
+## Train an adapter
+
+GPU training has not been rerun as part of this cleanup. The lightweight tests do not certify the CUDA or model-download path.
+
+```bash
 pip install -r requirements.txt
-````
-
----
-
-## Структура проекта
-
-```
-configs/
-├── base.json
-├── telegram_config.json
-├── gpt_api_config.json
-├── models_configs/
-├── train_configs/
-├── lora_configs/
-├── quantisation_configs/
-
-scripts/ и utils/                  # основной код всего пайплайна
-data/                              # собранные и подготовленные данные в результате парсинга
-models/                            # скаченные локально модели и квантизации
-checkpoints/ и model_weights_dir   # обученные веса
-metrics_log.csv                    # собранные метрики
+python -m scripts.prepare_data --input /path/to/consented-posts.csv --output data
+python main.py --model configs/models_configs/Qwen2.5-1.5B-Instruct.json
 ```
 
----
+Use `--lora` and `--train` to select other JSON settings. Add `--quant configs/quantisation_configs/quant_nf4.json` for a 4-bit run. The base checkpoint is downloaded from Hugging Face on the first run; access and license terms depend on the selected model. Model weights can be large.
 
-## Конфигурация запуска
+Training uses causal language-model loss and ignores padding tokens. Adapter weights go to `checkpoints/`. Evaluation uses the saved adapter and writes aggregate metrics to the ignored `metrics_log.csv`. Generation is deterministic. The language setting defaults to Russian, matching the original experiment.
 
-Все настройки задаются через конфиги в `configs/` которые передаются в `main.py`. Вы можете варьировать:
+`requirements-legacy.txt` preserves the original environment snapshot. It includes CUDA and notebook packages and is not the recommended installation path.
 
-### 1. Выбор модели
+## Privacy and scope
 
-В `configs/models_configs/` находятся описания моделей. Примеры:
+Use only data you are allowed to process. Removing a username does not remove names, addresses or other identifying details inside a post. Review text before training, and do not publish adapters that may memorize private material.
 
-* `Mistral-7B-v0.1.json`
-* `Qwen2.5-1.5B-Instruct.json`
-* `RefalMachineRuadaptQwen2.5-7B-Lite-Beta.json`
-* `gpt-3.5-turbo.json` (для сравнения через API)
+Training and local evaluation do not send messages to an external inference API. The older `main_gpt.py` entry point is retained for provenance, but its API wrapper is absent from the public snapshot and it is not part of the supported path.
 
-```json
-{
-  "name": "mistralai/Mistral-7B-v0.1",
-  "original_model": "models/Mistral-7B-v0.1",
-  "train_data": "data/train_data.csv",
-  "val_data": "data/val_data.csv",
-  "test_data": "data/test_data.csv",
-  "model_weights_dir": "checkpoints"
-}
-```
-```python
-base_model_cfg = load_config("configs/models_configs/Mistral-7B-v0.1.json")
-```
+Telegram credentials and session files belong in local, ignored files. The current example configuration contains no account credentials. Removing credentials from the current tree does not remove them from Git history.
 
-### 2. Квантование (опционально)
+## Code
 
-Можно указать конфиг квантования из `configs/quantisation_configs/`, например:
-
-```json
-{
-  "quant_name": "quant_fp4",
-  "quantized": true,
-  "base_model_id": "mistralai/Mistral-7B-v0.1",
-  "original_model": "models/Mistral-7B-v0.1",
-  "quantized_model": "./models/mistral-7b-fp4",
-  "load_in_4bit": true,
-  "bnb_4bit_use_double_quant": false,
-  "bnb_4bit_quant_type": "fp4",
-  "bnb_4bit_compute_dtype": "bfloat16",
-  "bnb_4bit_group_size": 32,
-  "llm_int8_enable_fp32_cpu_offload": false
-}
-```
-
-```python
-quant_cfg = load_config("configs/quantisation_configs/quant_fp4.json")
-```
-
-Или отключить:
-
-```python
-quant_cfg = None
-```
-
-### 3. LoRA-конфиг (опционально)
-
-```json
-{
-  "name": "lora_max_quality",
-  "r": 32,
-  "lora_alpha": 64,
-  "lora_dropout": 0.05,
-  "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj"],
-  "bias": "none",
-  "task_type": "CAUSAL_LM"
-}
-
-```
-
-```python
-lora_cfg = load_config("configs/lora_configs/lora_optimal.json")
-```
-
-Или отключить LoRA:
-
-```python
-lora_cfg = None
-```
-
-### 4. Подсказка (USE\_PROMPT)
-
-В `main.py`:
-
-```python
-USE_PROMPT = False
-```
-
-Если True, будет использоваться небольшой вспомогательный промпт на основе train-данных при генерации.
-
----
-
-## Добавление приватных ключей
-
-### Telegram API
-
-Файл `configs/telegram_config.json`:
-
-```json
-{
-  "tg_messages": "data/tg_messages.csv",
-  "api_id": 12345678,
-  "api_hash": "your_api_hash",
-  "session_name": "parser_nir_session",
-  "channel_name": "channel_name",
-  "phone": "",
-  "code": "",
-  "password": ""
-}
-```
-
-Password это пароль при двухфакторной аутендификации. Code - проверочный код, который прийдет в сообщениие при попытке спарсить канал через ваш тг-api.
-
-### OpenAI API
-
-Файл `configs/gpt_api_config.json`:
-
-```json
-{
-  "api_key": "sk-..."
-}
-```
-
----
-
-## Запуск пайплайна
-
-```bash
-python main.py
-```
-
-Внутри он вызывает:
-
-* скачивание модели,
-* квантование (если задано),
-* LoRA-файнтюнинг (если задано),
-* сохранение весов,
-* генерация и оценка метрик.
-
----
-
-## Сравнение с GPT (API)
-
-Для сравнения метрик с GPT-3.5-turbo:
-
-```bash
-python main_gpt.py
-```
-
-Требуется наличие API-ключа в `configs/gpt_api_config.json`.
-
----
-
-## Метрики
-
-Пайплайн оценивает:
-
-* **BLEU** — n-грамм совпадения
-* **ROUGE-L** — совпадение длинных подпоследовательностей
-* **BERTScore** — семантическое сходство (самая важная метрика в контексте стилевого совпадения)
-* **Perplexity** — логарифмическая уверенность
-* **Repetition** — количество повторов в генерации
-
-
-
+`scripts/prepare_data.py` prepares chronological splits. `scripts/finetune.py` fits the adapter. `scripts/metrics.py` evaluates held-out continuations. `tests/` checks data boundaries, token handling and configuration paths without downloading a model.
