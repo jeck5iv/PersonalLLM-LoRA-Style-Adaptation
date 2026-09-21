@@ -1,6 +1,6 @@
 # Personal writing style with LoRA
 
-I built this project to study whether a small adapter could make an open language model write more like a particular author. The input is a collection of posts used with the author's permission. The task is held-out text continuation, not question answering.
+I built this project to study whether a small adapter could make an open language model write more like a particular author. The input is a collection of that author's posts. Use only text you have permission to process. The task is held-out text continuation, not question answering.
 
 The pipeline separates the base model, quantization, adapter and training settings. It supports the Mistral and Qwen configurations in `configs/`, with optional 4-bit loading and LoRA on the attention projections.
 
@@ -38,7 +38,7 @@ python main.py --model configs/models_configs/Qwen2.5-1.5B-Instruct.json
 
 Use `--lora` and `--train` to select other JSON settings. Add `--quant configs/quantisation_configs/quant_nf4.json` for a 4-bit run. The base checkpoint is downloaded from Hugging Face on the first run; access and license terms depend on the selected model. Model weights can be large.
 
-Training uses causal language-model loss and ignores padding tokens. Adapter weights go to `checkpoints/`. Evaluation uses the saved adapter and writes aggregate metrics to the ignored `metrics_log.csv`. Generation is deterministic. The language setting defaults to Russian, matching the original experiment.
+Training uses causal language-model loss and ignores padding tokens. Adapter weights go to `checkpoints/`. Evaluation uses the saved adapter and writes aggregate metrics to the ignored `metrics_log.csv`. Generation uses greedy decoding rather than sampling. The language setting defaults to Russian, matching the original experiment.
 
 `requirements-legacy.txt` preserves the original environment snapshot. It includes CUDA and notebook packages and is not the recommended installation path.
 
