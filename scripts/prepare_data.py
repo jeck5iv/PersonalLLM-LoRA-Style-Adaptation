@@ -1,39 +1,55 @@
-import pandas as pd
-import re
+import argparse
 from pathlib import Path
-from utils.paths import Paths
 
-def clean_text(text: str) -> str:
-    """Очистка текста от лишних символов"""
-    if not isinstance(text, str):
-        return ""
-    text = re.sub(r'http\S+|www\S+', '', text)
-    text = re.sub(r'@[A-Za-z0-9_]+', '', text)
-    text = re.sub(r'[^\w\s,]', '', text)
-    return text.strip()
+import pandas as pd
 
-def prepare_data(paths: Paths):
-    """Основная функция подготовки данных"""
-    print(f"\nPreparing data from {paths.tg_messages}")
+from utils.text import clean_text
 
-    data = pd.read_csv(paths.tg_messages)
-    data['cleaned_text'] = data['text'].fillna('').apply(clean_text)
 
-    data = data[data['cleaned_text'].str.len() >= 100].copy()
+def split_posts(data, min_chars=100):
+    if not {"date", "text"}.issubset(data.columns):
+        raise ValueError("Input must contain date and text columns")
+    work = pd.DataFrame({
+        "date": pd.to_datetime(data["date"], utc=True, errors="raise"),
+        "cleaned_text": data["text"].map(clean_text),
+    })
+    if work["date"].isna().any():
+        raise ValueError("Every post needs a timestamp")
+    work = work[work["cleaned_text"].str.len() >= min_chars]
+    work = work.sort_values("date", kind="stable").drop_duplicates("cleaned_text")
+    dates = work["date"].drop_duplicates().tolist()
+    if len(dates) < 10:
+        raise ValueError("At least ten distinct timestamps are needed after cleaning")
+    train_end, val_end = dates[int(len(dates) * 0.8)], dates[int(len(dates) * 0.9)]
+    return {
+        "train": work[work["date"] < train_end].reset_index(drop=True),
+        "val": work[(work["date"] >= train_end) & (work["date"] < val_end)].reset_index(drop=True),
+        "test": work[work["date"] >= val_end].reset_index(drop=True),
+    }
 
-    train_val = data.sample(frac=0.9, random_state=1986)
-    test_data = data.drop(train_val.index)
 
-    train_data = train_val.sample(frac=8/9, random_state=1986)
-    val_data = train_val.drop(train_data.index)
+def prepare_data(paths, min_chars=100):
+    splits = split_posts(pd.read_csv(paths.tg_messages), min_chars=min_chars)
+    for name, frame in splits.items():
+        path = getattr(paths, name + "_data")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(path, index=False)
+        print(f"{name}: {len(frame)} posts")
+    return splits
 
-    paths.data_dir.mkdir(exist_ok=True)
-    train_data.to_csv(paths.train_data, index=False)
-    val_data.to_csv(paths.val_data, index=False)
-    test_data.to_csv(paths.test_data, index=False)
 
-    print("Data prepared:")
-    print(f"- Train: {paths.train_data} ({len(train_data)} rows)")
-    print(f"- Val:   {paths.val_data} ({len(val_data)} rows)")
-    print(f"- Test:  {paths.test_data} ({len(test_data)} rows)")
+def main():
+    parser = argparse.ArgumentParser(description="Prepare chronological text splits")
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--min-chars", type=int, default=100)
+    args = parser.parse_args()
+    splits = split_posts(pd.read_csv(args.input), min_chars=args.min_chars)
+    args.output.mkdir(parents=True, exist_ok=True)
+    for name, frame in splits.items():
+        frame.to_csv(args.output / f"{name}_data.csv", index=False)
+        print(f"{name}: {len(frame)} posts")
 
+
+if __name__ == "__main__":
+    main()

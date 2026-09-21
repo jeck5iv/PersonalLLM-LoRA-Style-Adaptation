@@ -33,3 +33,12 @@ data/*.json
 *.lock
 
 **/.ipynb_checkpoints/
+
+.venv/
+.env
+.env.*
+*.session-journal
+configs/*.local.json
+checkpoints_*/
+logs_*/
+data/

@@ -1,10 +1,10 @@
 {
-    "tg_messages": "data/tg_messages.csv",
-    "api_id": 28244680,
-    "api_hash": "3960097bbf082893fa94fcc482b1ac16",
-    "session_name": "parser_nir_session",
-    "channel_name": "vanya_die_twice",
-    "phone": "",
-    "code": "",
-    "password": ""
+  "tg_messages": "data/tg_messages.csv",
+  "api_id": null,
+  "api_hash": "",
+  "session_name": "local_telegram_session",
+  "channel_name": "",
+  "phone": "",
+  "code": "",
+  "password": ""
 }

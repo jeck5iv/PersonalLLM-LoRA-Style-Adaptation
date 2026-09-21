@@ -1,73 +1,52 @@
-import os
-from utils.io import load_config, load_model
-from utils.paths import Paths
-from scripts.download_model import run as download_model
-from scripts.quantize_model import run as quantize_model
-from scripts.telegram_parse import run_parser as telegram_parse
-from scripts.prepare_data import prepare_data
-from scripts.finetune import run as finetune
-from scripts.evaluate import evaluate
-from scripts.save_load_model import save_model
-from scripts.metrics import evaluate_metrics
-from scripts.metrics import save_metrics_csv
-from scripts.metrics import build_prompt_from_train_data
+import argparse
+from pathlib import Path
 
-USE_PROMPT = False
+from utils.io import load_config
+from utils.paths import Paths
+
 
 def main():
-    base_cfg = load_config("configs/BASE.json")
-    base_model_cfg = load_config("configs/models_configs/RefalMachineRuadaptQwen2.5-7B-Lite-Beta.json")
-    quant_cfg = None #load_config("configs/quantisation_configs/quant_fp4.json")
-    lora_cfg = load_config("configs/lora_configs/lora_optimal.json")
-    train_cfg = load_config("configs/train_configs/train_shared.json")
-    telegram_cfg = load_config("configs/telegram_config.json")
+    parser = argparse.ArgumentParser(description="Train and evaluate a LoRA adapter")
+    parser.add_argument("--model", default="configs/models_configs/Qwen2.5-1.5B-Instruct.json")
+    parser.add_argument("--lora", default="configs/lora_configs/lora_optimal.json")
+    parser.add_argument("--train", default="configs/train_configs/train_shared.json")
+    parser.add_argument("--quant", default=None)
+    parser.add_argument("--num-samples", type=int, default=100)
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent
+    config = lambda name: load_config(root / name)
+    model_cfg = {**config(args.model), **config("configs/base.json")}
+    if args.quant:
+        quant_cfg = config(args.quant)
+        # Keep the selected model when applying a quantization preset.
+        for key in ("name", "base_model_id", "original_model", "quantized_model"):
+            quant_cfg.pop(key, None)
+        model_cfg.update(quant_cfg)
+    lora_cfg, train_cfg = config(args.lora), config(args.train)
+    paths = Paths(model_cfg, config("configs/telegram_config.json"))
+    for data in (paths.train_data, paths.val_data, paths.test_data):
+        if not data.is_file():
+            parser.error(f"Missing {data}. Run python -m scripts.prepare_data first.")
 
-    model_cfg = {**base_model_cfg, **(quant_cfg or {}), **base_cfg}
-    print(model_cfg)
-    paths = Paths(model_cfg, telegram_cfg)
-    
-    os.makedirs(paths.data_dir, exist_ok=True)
-    os.makedirs(paths.original_model.parent, exist_ok=True)
-    os.makedirs(paths.model_weights_dir, exist_ok=True)
+    from scripts.download_model import run as download_model
+    from scripts.finetune import run as finetune
+    from scripts.metrics import evaluate_metrics, save_metrics_csv
+    from scripts.save_load_model import save_model
 
-
-    # Пайплайн
-    print("=== Downloading model ===")
-    download_model(base_model_cfg)
-    
-    print("\n=== Quantizing model ===")
-    if quant_cfg is None:
-        print("=== Empty quant_cfg, skipping quantizing model ===")
-    else:
-        quantize_model(model_cfg, paths)
-        model_cfg["quantized"] = True
-    
-    # print("\n=== Parsing Telegram ===")
-    # telegram_parse(telegram_cfg, paths)
-    
-    # print("\n=== Preparing data ===")
-    # prepare_data(paths)
-
-    print("\n=== Finetuning ===")
-    if lora_cfg is None:
-        print("lora_cfg is None — Finetuning будет пропущен")
-        from utils.io import load_model
-        model, tokenizer = load_model(paths.quantized_model if model_cfg.get("quantized") else paths.original_model, model_cfg)
-    else:
-        print("Train config:", train_cfg)
-        print(lora_cfg, "lora_cfg")
-        model, tokenizer = finetune(model_cfg, lora_cfg, train_cfg, paths)
-
-    print("\n=== Saving model ===")
-    model_name = save_model(model, tokenizer, model_cfg, lora_cfg or {}, paths, train_cfg)
-
-    print("\n=== Evaluating ===")
-    evaluate(model_cfg, paths)
-
-    print("\n=== Evaluating metrics ===")
-    prompt = build_prompt_from_train_data(paths.train_data) if USE_PROMPT else None
-    metrics = evaluate_metrics(model_cfg, paths, model_name, prompt=prompt)
-    save_metrics_csv(metrics, model_cfg, lora_cfg or {}, paths, with_prompt=USE_PROMPT)
+    model_cfg["original_model"] = str(paths.original_model)
+    paths.model_weights_dir.mkdir(parents=True, exist_ok=True)
+    download_model(model_cfg)
+    model, tokenizer = finetune(model_cfg, lora_cfg, train_cfg, paths)
+    name = save_model(model, tokenizer, model_cfg, lora_cfg, paths, train_cfg)
+    del model, tokenizer
+    import gc
+    import torch
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    metrics = evaluate_metrics(model_cfg, paths, name, num_samples=args.num_samples)
+    save_metrics_csv(metrics, model_cfg, lora_cfg, paths, with_prompt=False)
+    print(metrics)
 
 
 if __name__ == "__main__":
