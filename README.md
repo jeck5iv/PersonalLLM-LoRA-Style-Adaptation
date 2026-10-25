@@ -1,55 +1,70 @@
-# Personal writing style with LoRA
+# Parameter-Efficient Language Model Adaptation
 
-I built this project to study whether a small adapter could make an open language model write more like a particular author. The input is a collection of that author's posts. Use only text you have permission to process. The task is held-out text continuation, not question answering.
+[![Checks](https://github.com/jeck5iv/PersonalLLM-LoRA-Style-Adaptation/actions/workflows/checks.yml/badge.svg)](https://github.com/jeck5iv/PersonalLLM-LoRA-Style-Adaptation/actions/workflows/checks.yml)
 
-The pipeline separates the base model, quantization, adapter and training settings. It supports the Mistral and Qwen configurations in `configs/`, with optional 4-bit loading and LoRA on the attention projections.
+**[Research notes](docs/research.md) · [Evaluation protocol](docs/evaluation-protocol.md) · [Configurations](configs/) · [CPU checks](tests/)**
 
-## What is available
+Can a low-rank adapter learn an author's writing patterns from a limited collection of posts, while preserving useful language-model behaviour?
 
-The repository contains data preparation, adapter training, generation and evaluation code. It does not contain personal messages, trained weights or a verified results table. I therefore do not claim a measured improvement in writing style from this public snapshot.
+I formulated the experiment as **conditional language modelling with a low-rank parameter update**, using chronological data separation and held-out continuation evaluation. The implementation uses PyTorch, Hugging Face and PEFT/LoRA. Model, quantisation, adapter and training settings are separated so that experiments share the same pipeline. The repository includes Qwen 1.5B and 7B configurations, Mistral 7B and optional FP4/NF4 loading.
 
-The evaluation uses the first 80% of a held-out post as a prompt and compares the generated continuation with the rest. BLEU, ROUGE-L and BERTScore describe text overlap or semantic similarity. They do not establish that a model has learned someone's style. Perplexity and repetition are useful diagnostics, with the same limitation.
+![Chronological preparation, low-rank adaptation and held-out continuation evaluation](docs/figures/experiment.svg)
 
-[Research notes](docs/research.md) explain the experiment, evaluation problems and changes made while preparing this release.
+## Research design
+
+| Component | Design choice | Why it matters |
+| --- | --- | --- |
+| Data | Preserve punctuation, remove exact cleaned duplicates, split by timestamp | Retain stylistic features and evaluate later writing |
+| Adaptation | Freeze the base model; learn LoRA updates to attention projections | Study adaptation with a smaller trainable parameter set |
+| Training | Causal next-token loss with padding labels masked | Avoid learning from artificial padding tokens |
+| Evaluation | Give a held-out prefix and score only its generated continuation | Keep prompt tokens out of generation metrics |
+| Diagnostics | BERTScore, perplexity, BLEU/ROUGE-L and repetition | Examine different aspects of continuation behaviour |
+
+For a projection matrix, LoRA parameterises the update as $\Delta W=(\alpha/r)BA$, where the adapter rank $r$ is much smaller than the projection dimensions. Optional 4-bit loading reduces base-weight storage; actual memory use depends on hardware, checkpoint and training settings.
+
+## Evidence status
+
+The public artifact contains the implementation, experiment configurations and CPU tests. It contains **no verified base-versus-adapter results table**, private posts or trained checkpoints. GPU training and generation quality have not been rerun for this release.
+
+Text overlap and semantic similarity do not by themselves establish style transfer. The [evaluation protocol](docs/evaluation-protocol.md) defines the matched baseline, frozen prompts, multi-seed comparison and blinded style review needed for that claim.
 
 ## Try the data pipeline
 
-Python 3.11 or 3.12. This part runs on a CPU and needs no credentials.
+Python 3.11 or 3.12. This example runs on a CPU without model downloads or credentials:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-checks.txt
-python -m scripts.prepare_data --input examples/posts.csv --output /tmp/style-data --min-chars 20
+python -m pip install -r requirements-checks.txt
+python -m scripts.prepare_data \
+  --input examples/posts.csv --output /tmp/style-data --min-chars 20
 python -m unittest discover -s tests
 ```
 
-The example posts are synthetic. For your own data, supply a CSV with `date` and `text` columns. Preparation removes links and handles, keeps punctuation, removes exact cleaned duplicates and splits in time order. It writes only cleaned text and timestamps, not original messages or account metadata. This is basic redaction, not guaranteed anonymization.
+The example posts are synthetic. For other data, provide a CSV with `date` and `text` columns and permission to process its contents. Preparation writes cleaned text and timestamps, removes URLs and handles, and keeps equal timestamps in one split. Basic redaction is not full anonymisation.
 
 ## Train an adapter
 
-GPU training has not been rerun as part of this cleanup. The lightweight tests do not certify the CUDA or model-download path.
+The following is the configured training path, which requires a suitable GPU environment:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python -m scripts.prepare_data --input /path/to/consented-posts.csv --output data
 python main.py --model configs/models_configs/Qwen2.5-1.5B-Instruct.json
 ```
 
-Use `--lora` and `--train` to select other JSON settings. Add `--quant configs/quantisation_configs/quant_nf4.json` for a 4-bit run. The base checkpoint is downloaded from Hugging Face on the first run; access and license terms depend on the selected model. Model weights can be large.
+Select alternative settings with `--lora` and `--train`; add `--quant configs/quantisation_configs/quant_nf4.json` for a 4-bit run. The first run downloads the selected checkpoint from Hugging Face subject to its access and licence terms.
 
-Training uses causal language-model loss and ignores padding tokens. Adapter weights go to `checkpoints/`. Evaluation uses the saved adapter and writes aggregate metrics to the ignored `metrics_log.csv`. Generation uses greedy decoding rather than sampling. The language setting defaults to Russian, matching the original experiment.
+Adapter weights go to `checkpoints/`; evaluation writes aggregate metrics to the ignored `metrics_log.csv`. Generation uses greedy decoding. The default language is Russian, matching the original experiment. `requirements-legacy.txt` preserves the old environment snapshot.
 
-`requirements-legacy.txt` preserves the original environment snapshot. It includes CUDA and notebook packages and is not the recommended installation path.
+## Code map
 
-## Privacy and scope
+| Path | Responsibility |
+| --- | --- |
+| [Preparation](scripts/prepare_data.py) | Cleaning, deduplication and chronological separation |
+| [Fine-tuning](scripts/finetune.py) | Adapter training and padding masks |
+| [Evaluation](scripts/metrics.py) | Token-based continuation slicing and metrics |
+| [Tests](tests/test_pipeline.py) | Data boundaries, token handling and configuration paths |
+| [Research notes](docs/research.md) | Experimental motivation, corrections and remaining questions |
 
-Use only data you are allowed to process. Removing a username does not remove names, addresses or other identifying details inside a post. Review text before training, and do not publish adapters that may memorize private material.
-
-Training and local evaluation do not send messages to an external inference API. The older `main_gpt.py` entry point is retained for provenance, but its API wrapper is absent from the public snapshot and it is not part of the supported path.
-
-Telegram credentials and session files belong in local, ignored files. The current example configuration contains no account credentials. Removing credentials from the current tree does not remove them from Git history.
-
-## Code
-
-`scripts/prepare_data.py` prepares chronological splits. `scripts/finetune.py` fits the adapter. `scripts/metrics.py` evaluates held-out continuations. `tests/` checks data boundaries, token handling and configuration paths without downloading a model.
+Use only authorised text and review identifying details before training. Do not publish adapters that may memorise private material. The legacy `main_gpt.py` wrapper is incomplete in the public snapshot and is outside the supported path. Local training and evaluation do not send posts to an external inference API; local credentials, sessions and weights remain ignored. Removing a secret from the current tree does not remove it from Git history.
